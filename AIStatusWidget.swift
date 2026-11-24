@@ -887,10 +887,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.menu = buildMenu()
     }
 
+    private var positionFilePath: String {
+        let dir = NSHomeDirectory() + "/Library/Application Support/AIStatusWidget"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir + "/position.json"
+    }
+
+    private func loadSavedOrigin() -> NSPoint? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: positionFilePath)),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Double],
+              let x = dict["x"], let y = dict["y"] else {
+            return nil
+        }
+        return NSPoint(x: x, y: y)
+    }
+
+    private func saveOrigin(_ origin: NSPoint) {
+        let dict: [String: Double] = ["x": Double(origin.x), "y": Double(origin.y)]
+        if let data = try? JSONSerialization.data(withJSONObject: dict) {
+            try? data.write(to: URL(fileURLWithPath: positionFilePath), options: .atomic)
+        }
+    }
+
     private func clampedOrigin(_ origin: NSPoint, size: NSSize) -> NSPoint {
-        let vf = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let x = min(max(origin.x, vf.minX + 8), vf.maxX - size.width - 8)
-        let y = min(max(origin.y, vf.minY + 8), vf.maxY - size.height - 8)
+        let center = NSPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(center) })
+            ?? NSScreen.screens.first(where: { $0.frame.intersects(NSRect(origin: origin, size: size)) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        let vf = targetScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let x = min(max(origin.x, vf.minX + 4), vf.maxX - size.width - 4)
+        let y = min(max(origin.y, vf.minY + 4), vf.maxY - size.height - 4)
         return NSPoint(x: x, y: y)
     }
 
@@ -923,13 +950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let size = NSSize(width: width, height: height)
         let vf = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
 
-        let defaults = UserDefaults.standard
-        let rawOrigin: NSPoint
-        if defaults.object(forKey: posXKey) != nil, defaults.object(forKey: posYKey) != nil {
-            rawOrigin = NSPoint(x: defaults.double(forKey: posXKey), y: defaults.double(forKey: posYKey))
-        } else {
-            rawOrigin = NSPoint(x: vf.maxX - width - 24, y: vf.maxY - height - 20)
-        }
+        let rawOrigin = loadSavedOrigin() ?? NSPoint(x: vf.maxX - width - 24, y: vf.maxY - height - 20)
         let origin = clampedOrigin(rawOrigin, size: size)
 
         panel = NSPanel(
@@ -954,8 +975,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             let pos = self.clampedOrigin(self.panel.frame.origin, size: size)
             self.panel.setFrameOrigin(pos)
-            UserDefaults.standard.set(Double(pos.x), forKey: self.posXKey)
-            UserDefaults.standard.set(Double(pos.y), forKey: self.posYKey)
+            self.saveOrigin(pos)
         }
         hosting.frame = glass.bounds
         hosting.autoresizingMask = [.width, .height]
