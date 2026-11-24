@@ -25,6 +25,10 @@ struct StatusPayload: Codable {
 }
 
 struct AIConfigSection: Codable {
+    var web_cookie: String?
+    var web_sync_interval_sec: Int?
+    var web_last_sync_at_ms: Int64?
+    var web_sync_status: String?
     var credits_anchor_value: Double?
     var credits_anchor_at_ms: Int64?
     var reset_at: String?
@@ -97,13 +101,14 @@ final class StatusStore: ObservableObject {
         }
     }
 
-    func refresh(completion: (() -> Void)? = nil) {
+    func refresh(forceWebSync: Bool = false, completion: (() -> Void)? = nil) {
         isRefreshing = true
         let script = collectorPath
+        let args = forceWebSync ? [script, "--sync-web"] : [script]
         DispatchQueue.global(qos: .userInitiated).async {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            proc.arguments = [script]
+            proc.arguments = args
             let pipe = Pipe()
             proc.standardOutput = pipe
             proc.standardError = Pipe()
@@ -611,17 +616,20 @@ final class LocalSetupServer: @unchecked Sendable {
     private let htmlPath: String
     private let onGetState: (@escaping (Data) -> Void) -> Void
     private let onRefreshState: (@escaping (Data) -> Void) -> Void
+    private let onSyncWeb: (@escaping (Data) -> Void) -> Void
     private let onSaveState: (Data, @escaping (Bool) -> Void) -> Void
 
     init(
         htmlPath: String,
         onGetState: @escaping (@escaping (Data) -> Void) -> Void,
         onRefreshState: @escaping (@escaping (Data) -> Void) -> Void,
+        onSyncWeb: @escaping (@escaping (Data) -> Void) -> Void,
         onSaveState: @escaping (Data, @escaping (Bool) -> Void) -> Void
     ) {
         self.htmlPath = htmlPath
         self.onGetState = onGetState
         self.onRefreshState = onRefreshState
+        self.onSyncWeb = onSyncWeb
         self.onSaveState = onSaveState
     }
 
@@ -719,6 +727,10 @@ final class LocalSetupServer: @unchecked Sendable {
             onRefreshState { jsonData in
                 self.sendResponse(clientFD, status: "200 OK", contentType: "application/json; charset=utf-8", body: jsonData)
             }
+        } else if method == "POST" && path == "/api/sync-wb" {
+            onSyncWeb { jsonData in
+                self.sendResponse(clientFD, status: "200 OK", contentType: "application/json; charset=utf-8", body: jsonData)
+            }
         } else if method == "POST" && path == "/api/save" {
             onSaveState(bodyData) { ok in
                 let resp = Data((ok ? "{\"ok\":true}" : "{\"ok\":false}").utf8)
@@ -808,6 +820,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     }
                 }
             },
+            onSyncWeb: { [weak self] reply in
+                Task { @MainActor in
+                    guard let self else {
+                        reply(Data("{}".utf8))
+                        return
+                    }
+                    self.store.refresh(forceWebSync: true) {
+                        reply(self.buildStateJSON())
+                    }
+                }
+            },
             onSaveState: { [weak self] bodyData, reply in
                 Task { @MainActor in
                     guard let self,
@@ -826,6 +849,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         cfg.antigravity.reset_at = agyReset
                     } else if body["agy_reset_at"] is NSNull {
                         cfg.antigravity.reset_at = nil
+                    }
+                    if let cookie = body["wb_cookie"] as? String {
+                        cfg.workbuddy.web_cookie = cookie
+                    } else if body["wb_cookie"] is NSNull {
+                        cfg.workbuddy.web_cookie = nil
                     }
                     if let rem = body["wb_credits_remaining"] as? Double {
                         cfg.workbuddy.credits_anchor_value = rem

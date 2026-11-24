@@ -263,7 +263,15 @@
           <span id="wbCheckinHint" style="font-family:var(--mono);font-size:11px;color:var(--neon);"></span>
         </div>
         <div style="margin-top:12px;">
-          <label id="wbRemLbl">Current Remaining Credits (auto-adds daily check-ins, auto-deducts usage)</label>
+          <label id="wbCookieLbl">workbuddy.cn Cookie (auto-syncs every 30 min, zero risk)</label>
+          <div class="row">
+            <input id="wbCookie" type="text" placeholder="Paste Cookie from workbuddy.cn/profile/plans-usage" style="flex:1;padding:9px 11px;border:1px solid var(--border);background:#090a0e;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;clip-path:var(--chamfer-sm);" onchange="saveLive()" />
+            <button class="btn primary sm" id="wbSyncBtn" onclick="syncWorkBuddyWeb()">SYNC NOW</button>
+          </div>
+          <div id="wbSyncStatus" style="font-family:var(--mono);font-size:11px;color:var(--sub);margin-top:6px;"></div>
+        </div>
+        <div style="margin-top:12px;">
+          <label id="wbRemLbl">Current Remaining Credits (auto-updated on web sync &amp; local usage)</label>
           <input id="wbRem" type="number" step="0.1" placeholder="e.g. 850" onchange="saveLive()" />
         </div>
         <div style="margin-top:12px;">
@@ -333,7 +341,9 @@
       recheck: 'RE-SCAN', ok: 'ONLINE', warn: 'OFFLINE',
       agyResetLbl: 'Custom Reset Override (optional, empty = auto 5h timer)',
       wbCalTitle: 'WorkBuddy Credit Calibration',
-      wbRemLbl: 'Current Remaining Credits (auto-adds check-ins, auto-deducts usage)',
+      wbCookieLbl: 'workbuddy.cn Cookie (auto-syncs every 30 min, zero risk)',
+      wbSyncBtn: 'SYNC NOW',
+      wbRemLbl: 'Current Remaining Credits (auto-updated on web sync & local usage)',
       wbResetLbl: 'Custom Reset Timer (optional)',
       freqLbl: 'Background Refresh Interval', loginLbl: 'Launch at Login',
       appLangLbl: 'App & Widget Language', closePage: 'CLOSE PAGE',
@@ -347,8 +357,10 @@
       agyName: 'Antigravity 本地引擎', wbName: 'WorkBuddy 本地数据库',
       recheck: '重新检测', ok: '已连接', warn: '未连接',
       agyResetLbl: '自定义重置时间（留空则自动使用本地 5 小时重置倒计时）',
-      wbCalTitle: 'WorkBuddy 积分校准（无上限）',
-      wbRemLbl: '当前剩余积分（保存后自动加每日签到、自动扣对话消耗）',
+      wbCalTitle: 'WorkBuddy 官网同步与积分校准',
+      wbCookieLbl: 'workbuddy.cn Cookie（每 30 分钟自动同步一次，零风控风险）',
+      wbSyncBtn: '立即同步',
+      wbRemLbl: '当前剩余积分（网页同步后自动更新，并叠加本地消耗）',
       wbResetLbl: '自定义重置时间（可选）',
       freqLbl: '后台自动刷新频率', loginLbl: '开机自动启动',
       appLangLbl: 'App 与小组件语言', closePage: '关闭网页',
@@ -375,6 +387,8 @@
     document.getElementById('recheckBtn').textContent = t.recheck;
     document.getElementById('agyResetLbl').textContent = t.agyResetLbl;
     document.getElementById('wbCalTitle').textContent = t.wbCalTitle;
+    document.getElementById('wbCookieLbl').textContent = t.wbCookieLbl;
+    document.getElementById('wbSyncBtn').textContent = t.wbSyncBtn;
     document.getElementById('wbRemLbl').textContent = t.wbRemLbl;
     document.getElementById('wbResetLbl').textContent = t.wbResetLbl;
     document.getElementById('appLangLbl').textContent = t.appLangLbl;
@@ -506,6 +520,15 @@
         const d1 = new Date(state.config.antigravity.reset_at);
         if (!isNaN(d1.getTime())) document.getElementById('agyReset').value = toLocalInput(d1);
       }
+      if (state.config.workbuddy && state.config.workbuddy.web_cookie && document.activeElement !== document.getElementById('wbCookie')) {
+        document.getElementById('wbCookie').value = state.config.workbuddy.web_cookie;
+      }
+      if (state.config.workbuddy && state.config.workbuddy.web_sync_status) {
+        const st = state.config.workbuddy.web_sync_status;
+        const el = document.getElementById('wbSyncStatus');
+        el.textContent = st === 'ok' ? (locale === 'zh' ? '官网同步成功' : 'Web sync OK') : ('Sync status: ' + st);
+        el.style.color = st === 'ok' ? 'var(--neon)' : 'var(--warn)';
+      }
       if (state.config.workbuddy && state.config.workbuddy.reset_at) {
         const d2 = new Date(state.config.workbuddy.reset_at);
         if (!isNaN(d2.getTime())) document.getElementById('wbReset').value = toLocalInput(d2);
@@ -524,13 +547,21 @@
     applyState(await res.json());
   }
 
+  async function syncWorkBuddyWeb() {
+    await saveLive();
+    const res = await fetch('/api/sync-wb', { method: 'POST' });
+    applyState(await res.json());
+  }
+
   async function saveLive() {
     const remRaw = document.getElementById('wbRem').value.trim();
+    const cookieVal = document.getElementById('wbCookie').value.trim();
     const body = {
       locale: locale,
       refresh_interval_sec: refreshSec,
       launch_at_login: document.getElementById('launchLogin').checked,
       agy_reset_at: toIsoOrNull('agyReset'),
+      wb_cookie: cookieVal === '' ? null : cookieVal,
       wb_credits_remaining: remRaw === '' ? null : Number(remRaw),
       wb_reset_at: toIsoOrNull('wbReset')
     };

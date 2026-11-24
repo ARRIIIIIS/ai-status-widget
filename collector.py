@@ -19,6 +19,10 @@ DEFAULT_CONFIG = {
         "reset_at": None,
     },
     "workbuddy": {
+        "web_cookie": None,
+        "web_sync_interval_sec": 1800,
+        "web_last_sync_at_ms": None,
+        "web_sync_status": None,
         "credits_anchor_value": None,
         "credits_anchor_at_ms": None,
         "reset_at": None,
@@ -274,8 +278,66 @@ def collect_workbuddy_checkins(anchor_at_ms=None):
     return round(claimed_today, 1), round(claimed_since_anchor, 1)
 
 
-def build_status():
+def save_config(cfg):
+    APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def sync_workbuddy_web(cfg, force=False):
+    """Fetch WorkBuddy remaining credits from workbuddy.cn/billing/meter/get-user-resource-summary."""
+    wb_cfg = cfg.setdefault("workbuddy", {})
+    cookie = (wb_cfg.get("web_cookie") or "").strip()
+    if not cookie:
+        return cfg
+
+    now_ms = int(datetime.datetime.now().timestamp() * 1000)
+    last_ms = wb_cfg.get("web_last_sync_at_ms") or 0
+    interval_ms = int(wb_cfg.get("web_sync_interval_sec") or 1800) * 1000
+    if not force and (now_ms - last_ms) < interval_ms:
+        return cfg
+
+    try:
+        req = urllib.request.Request(
+            "https://www.workbuddy.cn/billing/meter/get-user-resource-summary",
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Cookie": cookie,
+                "Origin": "https://www.workbuddy.cn",
+                "Referer": "https://www.workbuddy.cn/profile/plans-usage",
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        data = body.get("data")
+        if isinstance(data, dict) and isinstance(data.get("Packages"), list):
+            total_remain = 0.0
+            for pkg in data["Packages"]:
+                rem = pkg.get("CycleRemainCapacity")
+                if isinstance(rem, (int, float)):
+                    total_remain += float(rem)
+            wb_cfg["credits_anchor_value"] = round(total_remain, 1)
+            wb_cfg["credits_anchor_at_ms"] = now_ms
+            wb_cfg["web_last_sync_at_ms"] = now_ms
+            wb_cfg["web_sync_status"] = "ok"
+            save_config(cfg)
+        else:
+            wb_cfg["web_last_sync_at_ms"] = now_ms
+            wb_cfg["web_sync_status"] = f"auth_error:{body.get('code', 'unknown')}"
+            save_config(cfg)
+    except Exception as e:
+        wb_cfg["web_last_sync_at_ms"] = now_ms
+        wb_cfg["web_sync_status"] = f"error:{type(e).__name__}"
+        save_config(cfg)
+
+    return cfg
+
+
+def build_status(force_web_sync=False):
     cfg = load_or_create_config()
+    cfg = sync_workbuddy_web(cfg, force=force_web_sync)
     agy_cfg = cfg.get("antigravity", {})
     wb_cfg = cfg.get("workbuddy", {})
 
@@ -339,4 +401,6 @@ def build_status():
 
 
 if __name__ == "__main__":
-    print(json.dumps(build_status(), ensure_ascii=False))
+    import sys
+    force_web = "--sync-web" in sys.argv
+    print(json.dumps(build_status(force_web_sync=force_web), ensure_ascii=False))
